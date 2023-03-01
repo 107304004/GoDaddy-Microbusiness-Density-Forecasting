@@ -19,7 +19,22 @@ parser.add_argument('--cfips', '-cfips', type=int)
 parser.add_argument('--active', '-active', type=int)
 # args.cutval_date / args.shift / args.cfips / args.active
 args = parser.parse_args()
-
+'''
+--cutval_date
+2022-12 (val: 2022-12~)
+--shift
+0 (nothing)
+1 (add feature: microbusiness_density 1 lag)
+--cfips
+0 (nothing)
+1 (add feature: microbusiness_density_mean (groupby cfips) )
+2 (add:feature: microbusiness_density_std (groupby cfips) )
+3 (add feature: trend (linear regression slope) )
+4 (add all features above)
+--active
+0 (nothing)
+1 (add features: active & adult_pop)
+'''
 
 def cut_valid(df, date):
 
