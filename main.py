@@ -47,8 +47,9 @@ def cut_valid(df, date):
 
 def fe_shift(df, lag=1):
 
-    df[f'mbd_lag_{lag}'] = df.groupby('cfips')['microbusiness_density'].shift(lag)
-    features.append(f'mbd_lag_{lag}')
+    for i in range(lag):
+        df[f'mbd_lag_{i+1}'] = df.groupby('cfips')['microbusiness_density'].shift(i+1)
+        features.append(f'mbd_lag_{i+1}')
 
     return df.loc[df[f'mbd_lag_{lag}'].notnull()]
 
@@ -148,12 +149,8 @@ target = ['microbusiness_density']
 
 if args.shift > 0:
     print('Preparing shift feature...')
-    data = fe_shift(data, 1)
-    data = fe_shift(data, 2)
-    data = fe_shift(data, 3)
-    data = fe_shift(data, 4)
-    data = fe_shift(data, 5)
-    data = fe_shift(data, 6)
+    print('Data shape: ', data.shape)
+    data = fe_shift(data, 12)
 
 train, val = cut_valid(data, args.cutval_date)
 
