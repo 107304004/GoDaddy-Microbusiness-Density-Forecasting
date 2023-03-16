@@ -2,10 +2,9 @@ import numpy as np
 import pandas as pd
 
 from sklearn.linear_model import LinearRegression
+# import models
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import MinMaxScaler
 
 from tqdm import tqdm
 import argparse
@@ -48,7 +47,6 @@ def cut_valid(df, date):
 
 def fe_shift(df, lag=1):
 
-    print('Preparing shift feature...')
     df[f'mbd_lag_{lag}'] = df.groupby('cfips')['microbusiness_density'].shift(lag)
     features.append(f'mbd_lag_{lag}')
 
@@ -57,7 +55,6 @@ def fe_shift(df, lag=1):
 
 def fe_cfips(train, test, mean=0, std=0, trend=0):
 
-    print('Preparing cfips feature...')
     if mean > 0:
         train = train.merge(train.groupby('cfips').mean()['microbusiness_density'],
                             on='cfips', how='left', suffixes=('', '_mean'))
@@ -77,7 +74,7 @@ def fe_cfips(train, test, mean=0, std=0, trend=0):
         n_train = len(train.loc[train['cfips']==cfips[0]])
         x_train = np.arange(n_train).reshape((-1,1))
 
-        for c in tqdm(cfips):
+        for c in cfips:
             y_train = train.loc[train['cfips']==c]
             ## predict micro
             model = LinearRegression()
@@ -102,8 +99,7 @@ def fe_active(train, test):
     x_train = np.arange(n_train).reshape((-1,1))
     x_test = np.arange(n_train-1, n_train+n_test).reshape((-1,1))
 
-    print('Preparing new active & adult_pop...')
-    for c in tqdm(cfips):
+    for c in cfips:
 
         y_train = train.loc[train['cfips']==c]
 
@@ -151,41 +147,60 @@ features = ['year', 'month', 'pct_bb', 'pct_college',
 target = ['microbusiness_density']
 
 if args.shift > 0:
-    data = fe_shift(data)
+    print('Preparing shift feature...')
+    data = fe_shift(data, 1)
+    data = fe_shift(data, 2)
+    data = fe_shift(data, 3)
+    data = fe_shift(data, 4)
+    data = fe_shift(data, 5)
+    data = fe_shift(data, 6)
 
 train, val = cut_valid(data, args.cutval_date)
 
-if args.cfips == 1:
-    train, val = fe_cfips(train, val, 1, 0, 0)
-if args.cfips == 2:
-    train, val = fe_cfips(train, val, 0, 1, 0)
-if args.cfips == 3:
-    train, val = fe_cfips(train, val, 0, 0, 1)
-if args.cfips == 4:
+if args.cfips > 0:
+    print('Preparing cfips feature...')
     train, val = fe_cfips(train, val, 1, 1, 1)
 
 if args.active > 0:
+    print('Preparing new active & adult_pop...')
     train, val = fe_active(train, val)
 
 
 # training
 print('')
-print('Start training with ', features)
+print('Training Features: ', features)
 # scaler = StandardScaler()
 # scaler = MinMaxScaler()
-xgb = XGBRegressor()
-# xgb.fit(scaler.fit_transform(train[features]), train[target])
-# prediction = xgb.predict(scaler.fit_transform(val[features]))
-xgb.fit(train[features], train[target])
-prediction = xgb.predict(val[features])
+
+def train_xgb():
+    print('')
+    print('Model: ', 'xgbregressor')
+    xgb = XGBRegressor()
+    # xgb.fit(scaler.fit_transform(train[features]), train[target])
+    xgb.fit(train[features], train[target])
+    # prediction = xgb.predict(scaler.fit_transform(val[features]))
+    prediction = xgb.predict(val[features])
+    return prediction
+
+def train_lgbm():
+    print('')
+    print('Model: ', 'lgbmregressor')
+    lgbm = LGBMRegressor()
+    lgbm.fit(train[features], train[target])
+    prediction = lgbm.predict(val[features])
+    return prediction
+
 
 # eval
 def SMAPE(a, f):
     return 1 / len(a) * np.sum(2 * np.abs(f - a) / (np.abs(a) + np.abs(f)) * 100)
 
-score = SMAPE(val[target].values.reshape(-1), prediction)
-print('')
+score = SMAPE(val[target].values.reshape(-1), train_xgb())
+# print('')
 print('smape score: ', round(score, 4))
 
+score = SMAPE(val[target].values.reshape(-1), train_lgbm())
+# print('')
+print('smape score: ', round(score, 4))
 
 
