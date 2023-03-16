@@ -2,9 +2,12 @@ import numpy as np
 import pandas as pd
 
 from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import MinMaxScaler
 # import models
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
+
+
 
 from tqdm import tqdm
 import argparse
@@ -23,13 +26,10 @@ args = parser.parse_args()
 2022-12 (val: 2022-12~)
 --shift
 0 (nothing)
-1 (add feature: microbusiness_density 1 lag)
+1 (add feature: microbusiness_density 1~6 lag)
 --cfips
 0 (nothing)
-1 (add feature: microbusiness_density_mean (groupby cfips) )
-2 (add:feature: microbusiness_density_std (groupby cfips) )
-3 (add feature: trend (linear regression slope) )
-4 (add all features above)
+1 (add features: mbd_mean, mbd_std, mbd_trend)
 --active
 0 (nothing)
 1 (add features: active & adult_pop)
