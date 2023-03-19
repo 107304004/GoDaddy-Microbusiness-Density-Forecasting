@@ -1,13 +1,14 @@
 import numpy as np
 import pandas as pd
 
-from sklearn.linear_model import LinearRegression
+from feature_engineering import fe_active, fe_cfips, fe_shift
 from sklearn.preprocessing import MinMaxScaler
 # import models
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
-
-
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 
 from tqdm import tqdm
 import argparse
@@ -21,6 +22,7 @@ parser.add_argument('--cfips', '-cfips', type=int)
 parser.add_argument('--active', '-active', type=int)
 # args.cutval_date / args.shift / args.cfips / args.active
 args = parser.parse_args()
+
 '''
 --cutval_date
 2022-12 (val: 2022-12~)
@@ -35,6 +37,11 @@ args = parser.parse_args()
 1 (add features: active & adult_pop)
 '''
 
+
+# preparing data
+data = pd.read_csv('train_0224_v1.csv')
+# data = data.loc[data['first_day_of_month']>'2020-02']
+
 def cut_valid(df, date):
 
     train = df.loc[df['first_day_of_month']<date]
@@ -45,122 +52,26 @@ def cut_valid(df, date):
     return train, val
 
 
-def fe_shift(df, lag=1):
-
-    for i in range(lag):
-        df[f'mbd_lag_{i+1}'] = df.groupby('cfips')['microbusiness_density'].shift(i+1)
-        features.append(f'mbd_lag_{i+1}')
-
-    return df.loc[df[f'mbd_lag_{lag}'].notnull()]
-
-
-def fe_cfips(train, test, mean=0, std=0, trend=0):
-
-    if mean > 0:
-        train = train.merge(train.groupby('cfips').mean()['microbusiness_density'],
-                            on='cfips', how='left', suffixes=('', '_mean'))
-        test = test.merge(train.groupby('cfips').mean()['microbusiness_density'],
-                            on='cfips', how='left', suffixes=('', '_mean'))
-        features.append('microbusiness_density_mean')
-
-    if std > 0:
-        train = train.merge(train.groupby('cfips').std()['microbusiness_density'],
-                            on='cfips', how='left', suffixes=('', '_std'))
-        test = test.merge(train.groupby('cfips').std()['microbusiness_density'],
-                            on='cfips', how='left', suffixes=('', '_std'))
-        features.append('microbusiness_density_std')
-
-    if trend > 0:
-        cfips = test['cfips'].unique()
-        n_train = len(train.loc[train['cfips']==cfips[0]])
-        x_train = np.arange(n_train).reshape((-1,1))
-
-        for c in cfips:
-            y_train = train.loc[train['cfips']==c]
-            ## predict micro
-            model = LinearRegression()
-            model.fit(x_train, y_train['microbusiness_density'])
-            # get_coef
-            coef = model.coef_[0]
-            # if int(c) < 1010:
-            #     print(coef)
-            train.loc[train['cfips']==c, 'trend'] = coef
-            test.loc[test['cfips']==c, 'trend'] = coef
-        features.append('trend')
-
-    return train, test
-
-
-def fe_active(train, test):
-
-    cfips = test['cfips'].unique()
-    n_train = len(train.loc[train['cfips']==cfips[0]])
-    n_test = len(test.loc[test['cfips']==cfips[0]])
-
-    x_train = np.arange(n_train).reshape((-1,1))
-    x_test = np.arange(n_train-1, n_train+n_test).reshape((-1,1))
-
-    for c in cfips:
-
-        y_train = train.loc[train['cfips']==c]
-
-        ## predict active
-        model = LinearRegression()
-        model.fit(x_train, y_train['active'])
-        pred = model.predict(x_test)
-
-        # shift
-        last_active = y_train['active'].iloc[-1]
-        shift = pred[0] - last_active
-        pred = pred - shift
-
-        # assign new active for test
-        test.loc[test['cfips']==c, 'active'] = pred[1:]
-
-        ## predict adult_pop
-        adult_pop = []
-        last_year = y_train['year'].iloc[-1]
-        last_adult_pop = y_train['adult_pop'].iloc[-1]
-        ratio = y_train.groupby('year').mean()['adult_pop'].iloc[-1] /  y_train.groupby('year').mean()['adult_pop'].iloc[-2]
-        # if int(c) < 1010:
-        #     print(ratio)
-        for y in test.loc[test['cfips']==c, 'year']:
-            if last_year == y:
-                adult_pop.append(last_adult_pop)
-            else:
-                adult_pop.append(last_adult_pop * ratio)
-
-        # assign new adult_pop for test
-        test.loc[test['cfips']==c, 'adult_pop'] = adult_pop
-
-    features.append('active')
-    features.append('adult_pop')
-
-    return train, test
-
-# preparing data
-data = pd.read_csv('train_0224_v1.csv')
-# data = data.loc[data['first_day_of_month']>'2020-02']
-
 features = ['year', 'month', 'pct_bb', 'pct_college',
         'pct_foreign_born', 'pct_it_workers', 'median_hh_inc']
 
 target = ['microbusiness_density']
 
+# feature engineering
 if args.shift > 0:
     print('Preparing shift feature...')
     print('Data shape: ', data.shape)
-    data = fe_shift(data, 12)
+    data, features = fe_shift(data, features, 12)
 
 train, val = cut_valid(data, args.cutval_date)
 
 if args.cfips > 0:
     print('Preparing cfips feature...')
-    train, val = fe_cfips(train, val, 1, 1, 1)
+    train, val, features = fe_cfips(train, val, features, 1, 1, 1)
 
 if args.active > 0:
     print('Preparing new active & adult_pop...')
-    train, val = fe_active(train, val)
+    train, val, features = fe_active(train, val, features)
 
 
 # training
@@ -187,17 +98,168 @@ def train_lgbm():
     prediction = lgbm.predict(val[features])
     return prediction
 
+class NN(nn.Module):
+    def __init__(self, input_size, hidden_size=64, output_size=1):
+        super(NN, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        out = self.fc1(x)
+        out = self.fc2(out)
+        out = self.fc3(out)
+        return out
+
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size=64, num_layers=2, output_size=1):
+        super(LSTM, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # set initial hidden and cell states
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
+
+        # forward propagate LSTM
+        out, _ = self.lstm(x.unsqueeze(1), (h0, c0))
+        # unsqueeze: (64,n_features) -> (64, 1, n_features)
+        # out_shape: (batch_size, seq_length, hidden_size)
+
+        # decode the hidden state of the last time step
+        out = self.fc(out[:, -1, :])
+        return out
+
+class GRU(nn.Module):
+    def __init__(self, input_size, hidden_size=64, num_layers=2, output_size=1):
+        super(GRU, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # set initial hidden and cell states
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
+
+        # forward propagate
+        out, _ = self.gru(x.unsqueeze(1), h0)
+
+        # decode the hidden state of the last time step
+        out = self.fc(out[:, -1, :])
+        return out
+
+# deep learning training settings
+batch_size = 64
+
+# scaler df to tensor
+train_for_dl, val_for_dl = cut_valid(train, '2022-11')
+scaler = MinMaxScaler()
+train_for_dl_fe = scaler.fit_transform(train_for_dl[features])
+val_for_dl_fe = scaler.fit_transform(val_for_dl[features])
+test_for_dl_fe = scaler.fit_transform(val[features])
+x, y = torch.Tensor(train_for_dl_fe), torch.Tensor(train_for_dl[target].values)
+val_x, val_y = torch.Tensor(val_for_dl_fe), torch.Tensor(val_for_dl[target].values)
+test_x, test_y = torch.Tensor(test_for_dl_fe), torch.Tensor(val[target].values)
+
+# Dataset
+train_dataset = TensorDataset(x, y)
+val_dataset = TensorDataset(val_x, val_y)
+test_dataset = TensorDataset(test_x, test_y)
+
+# Dataloader
+train_loader = DataLoader(train_dataset, batch_size=batch_size)
+val_loader = DataLoader(val_dataset, batch_size=batch_size)
+test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
+n_features = len(features)
+
+def train_dl(model_name, n_epochs=30):
+
+    print('')
+    if model_name == 'nn':
+        print('model: nn.Linear')
+        model = NN(n_features, hidden_size=64, output_size=1)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
+    if model_name == 'lstm':
+        print('model: LSTM')
+        model = LSTM(n_features, hidden_size=64, num_layers=1, output_size=1)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.0025)
+    if model_name == 'gru':
+        print('model: GRU')
+        model = GRU(n_features, hidden_size=64, num_layers=1, output_size=1)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.0025)
+
+    # n_epochs = 6
+    for epoch in range(n_epochs):
+
+        batch_losses = []
+        for x_batch, y_batch in train_loader:
+            # forward pass
+            outputs = model(x_batch)
+            loss = criterion(outputs, y_batch)
+            # backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            batch_losses.append(loss.item())
+            # print(outputs.shape, y_batch.shape, loss.item())
+        training_loss = np.mean(batch_losses)
+
+        with torch.no_grad():
+            batch_val_losses = []
+            for x_val, y_val in val_loader:
+                model.eval()
+                outputs = model(x_val)
+                val_loss = criterion(outputs, y_val)
+                batch_val_losses.append(val_loss)
+            validation_loss = np.mean(batch_val_losses)
+        if (n_epochs > 9) and (epoch%5 == 4):
+            print(f"[{epoch+1}/{n_epochs}] Training loss: {training_loss:.4f}\t Validation loss: {validation_loss:.4f}")
+        if n_epochs < 10:
+            print(f"[{epoch+1}/{n_epochs}] Training loss: {training_loss:.4f}\t Validation loss: {validation_loss:.4f}")
+
+    with torch.no_grad():
+        predictions = []
+        values = []
+        for x_test, y_test in test_loader:
+            model.eval()
+            outputs = model(x_test)
+            predictions.append(outputs)
+            values.append(y_test)
+
+    return predictions, values
+
 
 # eval
 def SMAPE(a, f):
     return 1 / len(a) * np.sum(2 * np.abs(f - a) / (np.abs(a) + np.abs(f)) * 100)
 
 score = SMAPE(val[target].values.reshape(-1), train_xgb())
-# print('')
 print('smape score: ', round(score, 4))
 
 score = SMAPE(val[target].values.reshape(-1), train_lgbm())
-# print('')
 print('smape score: ', round(score, 4))
+
+p, v = train_dl('nn', n_epochs=6)
+p = torch.cat([t.view(-1) for t in p]).numpy()
+v = torch.cat([t.view(-1) for t in v]).numpy()
+print('smape score: ', round(SMAPE(p, v), 5))
+
+p, v = train_dl('lstm')
+p = torch.cat([t.view(-1) for t in p]).numpy()
+v = torch.cat([t.view(-1) for t in v]).numpy()
+print('smape score: ', round(SMAPE(p, v), 5))
+
+p, v = train_dl('gru')
+p = torch.cat([t.view(-1) for t in p]).numpy()
+v = torch.cat([t.view(-1) for t in v]).numpy()
+print('smape score: ', round(SMAPE(p, v), 5))
 
 
