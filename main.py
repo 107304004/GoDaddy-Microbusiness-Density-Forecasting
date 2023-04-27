@@ -108,7 +108,7 @@ print('smape score: ', round(score, 4))
 score = SMAPE(val[target].values.reshape(-1), train_lgbm(train, val, features, target))
 print('smape score: ', round(score, 4))
 
-p, v = train_dl(train_loader, val_loader, features, 'nn', n_epochs=6)
+p, v = train_dl(train_loader, val_loader, features, 'nn', n_epochs=10)
 p = torch.cat([t.view(-1) for t in p]).numpy()
 v = torch.cat([t.view(-1) for t in v]).numpy()
 print('smape score: ', round(SMAPE(p, v), 5))

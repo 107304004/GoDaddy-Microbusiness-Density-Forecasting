@@ -4,7 +4,8 @@ from lightgbm import LGBMRegressor
 import torch
 import torch.nn as nn
 
-
+# device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = 'cpu'
 
 def train_xgb(train, val, features, target):
     print('')
@@ -30,11 +31,13 @@ class NN(nn.Module):
         super(NN, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.relu = nn.ReLU()
         self.fc3 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         out = self.fc1(x)
         out = self.fc2(out)
+        out = self.relu(out)
         out = self.fc3(out)
         return out
 
@@ -44,6 +47,7 @@ class LSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.relu = nn.ReLU()
         self.fc = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
@@ -56,6 +60,7 @@ class LSTM(nn.Module):
         # unsqueeze: (64,n_features) -> (64, 1, n_features)
         # out_shape: (batch_size, seq_length, hidden_size)
 
+        out = self.relu(out)
         # decode the hidden state of the last time step
         out = self.fc(out[:, -1, :])
         return out
@@ -66,6 +71,7 @@ class GRU(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        self.relu = nn.ReLU()
         self.fc = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
@@ -75,30 +81,31 @@ class GRU(nn.Module):
         # forward propagate
         out, _ = self.gru(x.unsqueeze(1), h0)
 
+        out = self.relu(out)
         # decode the hidden state of the last time step
         out = self.fc(out[:, -1, :])
         return out
 
 
-def train_dl(train_loader, test_loader, features, model_name, n_epochs=30):
+def train_dl(train_loader, test_loader, features, model_name, n_epochs=50):
 
     n_features = len(features)
     print('')
     if model_name == 'nn':
         print('model: nn.Linear')
-        model = NN(n_features, hidden_size=64, output_size=1)
+        model = NN(n_features, hidden_size=64, output_size=1).to(device)
         criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     if model_name == 'lstm':
         print('model: LSTM')
-        model = LSTM(n_features, hidden_size=64, num_layers=1, output_size=1)
+        model = LSTM(n_features, hidden_size=64, num_layers=1, output_size=1).to(device)
         criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.009)
     if model_name == 'gru':
         print('model: GRU')
-        model = GRU(n_features, hidden_size=128, num_layers=1, output_size=1)
+        model = GRU(n_features, hidden_size=128, num_layers=1, output_size=1).to(device)
         criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.009)
 
     # n_epochs = 6
     for epoch in range(n_epochs):
@@ -106,6 +113,8 @@ def train_dl(train_loader, test_loader, features, model_name, n_epochs=30):
         batch_losses = []
         for x_batch, y_batch in train_loader:
             # forward pass
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
             outputs = model(x_batch)
             loss = criterion(outputs, y_batch)
             # backward pass
@@ -116,15 +125,17 @@ def train_dl(train_loader, test_loader, features, model_name, n_epochs=30):
             # print(outputs.shape, y_batch.shape, loss.item())
         training_loss = np.mean(batch_losses)
 
-        if (n_epochs > 9) and (epoch%5 == 4):
+        if (n_epochs > 10) and (epoch%5 == 4):
             print(f"[{epoch+1}/{n_epochs}] Training loss: {training_loss:.4f}")
-        if n_epochs < 10:
+        if n_epochs <= 10:
             print(f"[{epoch+1}/{n_epochs}] Training loss: {training_loss:.4f}")
 
     with torch.no_grad():
         predictions = []
         values = []
         for x_test, y_test in test_loader:
+            x_test = x_test.to(device)
+            y_test = y_test.to(device)
             model.eval()
             outputs = model(x_test)
             predictions.append(outputs)
