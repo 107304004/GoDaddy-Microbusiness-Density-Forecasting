@@ -1,6 +1,3 @@
-### I want to add this
-* hi
-* hello
-1. hey
-2. hallo
-3. ====
+#### todo
+* train on 2023 1/~3/ data
+* evaluate on 2023 4/~6/ data
